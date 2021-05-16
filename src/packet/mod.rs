@@ -1,7 +1,4 @@
-use std::io::{self, Read, Write};
-
-use log::*;
-use md5::Digest;
+use std::io::{self};
 
 /// TACACS+ authentication packet bodies.
 ///

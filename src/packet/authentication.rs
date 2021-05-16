@@ -1,11 +1,10 @@
 use std::io;
 
 use bitflags::bitflags;
-use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt};
+use byteorder::{ByteOrder, NetworkEndian};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::header::Header;
 use super::Encode;
 use crate::packet::Decode;
 
@@ -32,7 +31,7 @@ fn load_byte_field(mut rdr: impl io::Read, len: usize) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn load_string_field(mut rdr: impl io::Read, len: usize) -> io::Result<String> {
+fn load_string_field(rdr: impl io::Read, len: usize) -> io::Result<String> {
     let buf = load_byte_field(rdr, len)?;
     // FIXME(err): Return error on invalid UTF-8
     Ok(String::from_utf8(buf).expect("invalid UTF-8"))
@@ -47,8 +46,8 @@ impl Decode for Start {
         let priv_lvl = preamble_buf[1];
         let authen_type =
             AuthenticationType::from_u8(preamble_buf[2]).expect("failed to parse authen_type");
-        let authen_service =
-            AuthenticationService::from_u8(preamble_buf[3]).expect("failed to parse authen_service");
+        let authen_service = AuthenticationService::from_u8(preamble_buf[3])
+            .expect("failed to parse authen_service");
 
         let user = match preamble_buf[4] {
             0 => None,
@@ -246,7 +245,7 @@ impl Decode for AuthenticationContinue {
         Ok(Self {
             flags,
             user_msg,
-            data
+            data,
         })
     }
 }

@@ -1,12 +1,9 @@
 use std::collections::HashMap;
-use std::convert::TryInto;
-use std::io;
-use std::io::{Error, Read, Write};
+use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
 
 use log::*;
 use tictacacs::packet::authentication::*;
-use tictacacs::packet::header::*;
 use tictacacs::packet::*;
 
 const SHARED_SECRET: &str = "my_shared_key";
@@ -110,7 +107,9 @@ pub fn read_packet<D: Decode>(
             assert!(
                 end <= self.pad.len(),
                 "buf overruns pad length. offset/start/end: {}/{}/{}",
-                self.offset, start, end
+                self.offset,
+                start,
+                end
             );
             let bytes_read = self.inner.read(buf)?;
             buf.iter_mut()
@@ -178,7 +177,8 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
                 )?;
             }
             1 => {
-                let (header, auth_continue): (_, AuthenticationContinue) = read_packet(&mut stream, SHARED_SECRET)?;
+                let (header, auth_continue): (_, AuthenticationContinue) =
+                    read_packet(&mut stream, SHARED_SECRET)?;
                 info!("AuthenContinue: {:#?}", auth_continue);
                 let pwd = auth_continue.user_msg;
 
@@ -207,7 +207,7 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
                     &mut stream,
                     header.with_next_seq_no().with_body_length(reply.len() as _),
                     &reply,
-                    SHARED_SECRET
+                    SHARED_SECRET,
                 )?;
             }
             _ => {
@@ -220,7 +220,6 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
         }
 
         step += 1;
-
     }
 }
 
