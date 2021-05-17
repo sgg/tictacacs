@@ -21,7 +21,7 @@ pub trait Encode {
     fn to_writer<W: io::Write>(&self, w: W) -> io::Result<usize>;
 
     /// Return the encoded length of the body.
-    fn len(&self) -> usize;
+    fn encoded_len(&self) -> usize;
 }
 
 /// A trait for TACACS+ packet bodies that can be decoded from bytes

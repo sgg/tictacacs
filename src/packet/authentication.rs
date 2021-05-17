@@ -131,7 +131,7 @@ pub struct AuthenticationReply {
 
 impl Encode for AuthenticationReply {
     fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(self.len());
+        let mut buf = Vec::with_capacity(self.encoded_len());
         self.to_writer(&mut buf).expect("failed to write data");
 
         buf
@@ -173,7 +173,7 @@ impl Encode for AuthenticationReply {
         Ok(written)
     }
 
-    fn len(&self) -> usize {
+    fn encoded_len(&self) -> usize {
         6 + self.server_msg.as_ref().map_or(0, String::len) + self.data.as_ref().map_or(0, Vec::len)
     }
 }

@@ -183,7 +183,7 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
                 };
                 write_packet(
                     &mut stream,
-                    header.with_next_seq_no().with_body_length(reply.len() as _),
+                    header.with_next_seq_no().with_body_length(reply.encoded_len() as _),
                     &reply,
                     SHARED_SECRET,
                 )?;
@@ -217,7 +217,7 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
 
                 write_packet(
                     &mut stream,
-                    header.with_next_seq_no().with_body_length(reply.len() as _),
+                    header.with_next_seq_no().with_body_length(reply.encoded_len() as _),
                     &reply,
                     SHARED_SECRET,
                 )?;
@@ -259,7 +259,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             error!("Failed to open connection -- {}", e);
             e
         })?;
-        handle_stream(stream, &pw_db)?;
+        match handle_stream(stream, &pw_db) {
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => warn!("Stream closed prematurely!"),
+            Err(e) => error!("Handler returned error -- {}", e),
+            Ok(_) => {},
+        }
     }
 
     Ok(())

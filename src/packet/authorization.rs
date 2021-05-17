@@ -126,7 +126,7 @@ pub struct Argument {
 
 impl Argument {
     /// The number of bytes in the encoded argument.
-    pub fn len(&self) -> usize {
+    pub fn encoded_len(&self) -> usize {
         self.name.len() + self.value.len() + 1
     }
 }
@@ -225,10 +225,10 @@ impl Encode for AuthorizationReply {
         Ok(written)
     }
 
-    fn len(&self) -> usize {
+    fn encoded_len(&self) -> usize {
         6 + self.data.as_ref().map_or(0, String::len)
             + self.server_msg.as_ref().map_or(0, String::len)
-            + self.args.iter().map(Argument::len).sum::<usize>()
+            + self.args.iter().map(Argument::encoded_len).sum::<usize>()
     }
 }
 
