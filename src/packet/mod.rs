@@ -11,6 +11,8 @@ pub mod authorization;
 /// TACACS+ header bodies and fields.
 pub mod header;
 
+mod util;
+
 /// A trait for TACACS+ packet bodies that can be encoded.
 pub trait Encode {
     /// Serialize the data as a vector.

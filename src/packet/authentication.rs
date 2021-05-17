@@ -5,14 +5,14 @@ use byteorder::{ByteOrder, NetworkEndian};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::Encode;
-use crate::packet::Decode;
+use crate::packet::{Decode, Encode};
+use crate::packet::util::*;
 
-/// The packet body for an Authentication START request
+/// The packet body for an Authentication START request.
 ///
 /// https://www.rfc-editor.org/rfc/rfc8907.html#section-5.1-3
 #[derive(Clone, Debug)]
-pub struct Start {
+pub struct AuthenticationStart {
     pub action: Action,
     /// The privilege level that the user is authenticating as.
     pub priv_lvl: u8,
@@ -22,22 +22,10 @@ pub struct Start {
     pub user: Option<String>,
     pub port: String,
     pub rem_addr: Option<String>,
-    pub data: String,
+    pub data: Vec<u8>,
 }
 
-fn load_byte_field(mut rdr: impl io::Read, len: usize) -> io::Result<Vec<u8>> {
-    let mut buf = vec![0u8; len];
-    rdr.read_exact(&mut buf)?;
-    Ok(buf)
-}
-
-fn load_string_field(rdr: impl io::Read, len: usize) -> io::Result<String> {
-    let buf = load_byte_field(rdr, len)?;
-    // FIXME(err): Return error on invalid UTF-8
-    Ok(String::from_utf8(buf).expect("invalid UTF-8"))
-}
-
-impl Decode for Start {
+impl Decode for AuthenticationStart {
     fn from_reader<R: io::Read>(mut rdr: R) -> io::Result<Self> {
         let mut preamble_buf = [0u8; 8];
         rdr.read_exact(&mut preamble_buf)?;
@@ -45,9 +33,9 @@ impl Decode for Start {
         let action = Action::from_u8(preamble_buf[0]).expect("Failed to decode action");
         let priv_lvl = preamble_buf[1];
         let authen_type =
-            AuthenticationType::from_u8(preamble_buf[2]).expect("failed to parse authen_type");
+            AuthenticationType::from_u8(preamble_buf[2]).expect("Failed to decode authen_type");
         let authen_service = AuthenticationService::from_u8(preamble_buf[3])
-            .expect("failed to parse authen_service");
+            .expect("Failed to decode authen_service");
 
         let user = match preamble_buf[4] {
             0 => None,
@@ -61,7 +49,7 @@ impl Decode for Start {
             rem_addr_len => Some(load_string_field(&mut rdr, rem_addr_len as _)?),
         };
 
-        let data = load_string_field(&mut rdr, preamble_buf[7] as _)?;
+        let data = load_byte_field(&mut rdr, preamble_buf[7] as _)?;
 
         Ok(Self {
             action,
