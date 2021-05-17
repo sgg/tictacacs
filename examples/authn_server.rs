@@ -150,7 +150,8 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
     loop {
         match step {
             0 => {
-                let (header, auth_start): (_, Start) = read_packet(&mut stream, SHARED_SECRET)?;
+                let (header, auth_start): (_, AuthenticationStart) =
+                    read_packet(&mut stream, SHARED_SECRET)?;
 
                 info!("Parsed Header: {:#?}", header);
                 info!(
@@ -163,11 +164,22 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
                 info!("AuthenStart: {:#?}", auth_start);
                 username = auth_start.user;
 
-                let reply = AuthenticationReply {
-                    status: AuthenticationStatus::GetPass,
-                    flags: ReplyFlags::empty(),
-                    server_msg: None,
-                    data: None,
+                let reply = match &auth_start.authen_type {
+                    AuthenticationType::Ascii => AuthenticationReply {
+                        status: AuthenticationStatus::GetPass,
+                        flags: ReplyFlags::empty(),
+                        server_msg: None,
+                        data: None,
+                    },
+                    unsupported => AuthenticationReply {
+                        status: AuthenticationStatus::Restart,
+                        flags: ReplyFlags::empty(),
+                        server_msg: Some(format!(
+                            "{:?} auth is not a supported. Please use ASCII auth",
+                            unsupported
+                        )),
+                        data: None,
+                    },
                 };
                 write_packet(
                     &mut stream,
