@@ -124,22 +124,13 @@ pub fn read_packet<D: Decode>(
     let header = header::Header::from_reader(&mut rdr)?;
     trace!("Decoded header {:#?}", header);
 
-    let body = if header.is_obfuscated() {
-        let decoder = Decoder {
-            offset: 0,
-            pad: header.pseudo_pad(secret_key),
-            inner: rdr,
-        };
-
-        D::from_reader(decoder)
-    } else {
-        D::from_reader(rdr)
-    }?;
+    let decoder = header.body_decoder(&secret_key, rdr);
+    let body = D::from_reader(decoder)?;
 
     Ok((header, body))
 }
 
-fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::Result<()> {
+fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, UserInfo>) -> io::Result<()> {
     let peer_addr = stream.peer_addr()?;
     info!("Peer {:?} connected!", peer_addr);
     let mut buffer = vec![0u8; 2 << 15]; // A typical TACACS+ packet should be less than 64k
@@ -183,7 +174,9 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
                 };
                 write_packet(
                     &mut stream,
-                    header.with_next_seq_no().with_body_length(reply.encoded_len() as _),
+                    header
+                        .with_next_seq_no()
+                        .with_body_length(reply.encoded_len() as _),
                     &reply,
                     SHARED_SECRET,
                 )?;
@@ -195,10 +188,22 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
                 let pwd = auth_continue.user_msg;
 
                 let reply = match pw_db.get(username.as_ref().unwrap()) {
-                    Some(expected) if &pwd == expected => AuthenticationReply {
+                    Some(UserInfo {
+                        pw,
+                        second_factor: Some(second_factor),
+                    }) => AuthenticationReply {
+                        status: AuthenticationStatus::GetData,
+                        flags: ReplyFlags::empty(),
+                        server_msg: Some("Please provide second factor".to_string()),
+                        data: None,
+                    },
+                    Some(UserInfo {
+                        pw,
+                        second_factor: None,
+                    }) if &pwd == pw => AuthenticationReply {
                         status: AuthenticationStatus::Pass,
                         flags: ReplyFlags::empty(),
-                        server_msg: Some("good work".to_string()),
+                        server_msg: Some("authenticated!".to_string()),
                         data: None,
                     },
                     Some(_) => AuthenticationReply {
@@ -217,7 +222,9 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
 
                 write_packet(
                     &mut stream,
-                    header.with_next_seq_no().with_body_length(reply.encoded_len() as _),
+                    header
+                        .with_next_seq_no()
+                        .with_body_length(reply.encoded_len() as _),
                     &reply,
                     SHARED_SECRET,
                 )?;
@@ -235,18 +242,32 @@ fn handle_stream(mut stream: TcpStream, pw_db: &HashMap<String, String>) -> io::
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct UserInfo {
+    pw: String,
+    second_factor: Option<String>,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
     info!("Listening...");
 
-    let pw_db: HashMap<String, String> = [
-        ("bob", "password123"),
-        ("alice", "Star-Both-Circular-Grand-9"),
-        ("myuser", "mypass"),
-        ("myuser2", "mypass"),
+    let pw_db: HashMap<String, UserInfo> = [
+        ("bob", "password123", None),
+        ("alice", "Star-Both-Circular-Grand-9", None),
+        ("myuser", "mypass", None),
+        ("myuser2", "mypass", Some("foobar".to_string())),
     ]
     .iter()
-    .map(|(un, pw)| (un.to_string(), pw.to_string()))
+    .cloned()
+    .map(|(un, pw, second_factor)| {
+        let k = un.to_string();
+        let v = UserInfo {
+            pw: pw.to_string(),
+            second_factor,
+        };
+        (k, v)
+    })
     .collect();
 
     let listener = TcpListener::bind("127.0.0.1:10049").map_err(|e| {
@@ -260,9 +281,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             e
         })?;
         match handle_stream(stream, &pw_db) {
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => warn!("Stream closed prematurely!"),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                warn!("Stream closed prematurely!")
+            }
             Err(e) => error!("Handler returned error -- {}", e),
-            Ok(_) => {},
+            Ok(_) => {}
         }
     }
 
