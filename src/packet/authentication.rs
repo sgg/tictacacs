@@ -5,12 +5,25 @@ use byteorder::{ByteOrder, NetworkEndian};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::packet::{Decode, Encode};
 use crate::packet::util::*;
+use crate::packet::{Decode, Encode};
 
 /// The packet body for an Authentication START request.
 ///
 /// https://www.rfc-editor.org/rfc/rfc8907.html#section-5.1-3
+///
+/// ## Packet Format
+///
+/// ```plaintext
+///  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8
+/// +----------------+----------------+----------------+----------------+
+/// |     status     |      flags     |        server_msg_len           |
+/// +----------------+----------------+----------------+----------------+
+/// |           data_len              |        server_msg ...
+/// +----------------+----------------+----------------+----------------+
+/// |           data ...
+/// +----------------+----------------+
+/// ```
 #[derive(Clone, Debug)]
 pub struct AuthenticationStart {
     pub action: Action,
@@ -27,29 +40,29 @@ pub struct AuthenticationStart {
 
 impl Decode for AuthenticationStart {
     fn from_reader<R: io::Read>(mut rdr: R) -> io::Result<Self> {
-        let mut preamble_buf = [0u8; 8];
-        rdr.read_exact(&mut preamble_buf)?;
+        let mut buf = [0u8; 8];
+        rdr.read_exact(&mut buf)?;
 
-        let action = Action::from_u8(preamble_buf[0]).expect("Failed to decode action");
-        let priv_lvl = preamble_buf[1];
+        let action = Action::from_u8(buf[0]).expect("Failed to decode action");
+        let priv_lvl = buf[1];
         let authen_type =
-            AuthenticationType::from_u8(preamble_buf[2]).expect("Failed to decode authen_type");
-        let authen_service = AuthenticationService::from_u8(preamble_buf[3])
-            .expect("Failed to decode authen_service");
+            AuthenticationType::from_u8(buf[2]).expect("Failed to decode authen_type");
+        let authen_service =
+            AuthenticationService::from_u8(buf[3]).expect("Failed to decode authen_service");
 
-        let user = match preamble_buf[4] {
+        let user = match buf[4] {
             0 => None,
             user_len => Some(load_string_field(&mut rdr, user_len as _)?),
         };
 
-        let port = load_string_field(&mut rdr, preamble_buf[5] as _)?;
+        let port = load_string_field(&mut rdr, buf[5] as _)?;
 
-        let rem_addr = match preamble_buf[6] {
+        let rem_addr = match buf[6] {
             0 => None,
             rem_addr_len => Some(load_string_field(&mut rdr, rem_addr_len as _)?),
         };
 
-        let data = load_byte_field(&mut rdr, preamble_buf[7] as _)?;
+        let data = load_byte_field(&mut rdr, buf[7] as _)?;
 
         Ok(Self {
             action,
@@ -82,7 +95,7 @@ pub enum Action {
 ///
 /// https://www.rfc-editor.org/rfc/rfc8907.html#section-5.1-7
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, FromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, FromPrimitive)]
 pub enum AuthenticationType {
     /// TAC_PLUS_AUTHEN_TYPE_ASCII
     Ascii = 0x01,
@@ -97,7 +110,7 @@ pub enum AuthenticationType {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, FromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, FromPrimitive)]
 pub enum AuthenticationService {
     /// TAC_PLUS_AUTHEN_SVC_NONE
     None = 0x00,
@@ -130,47 +143,26 @@ pub struct AuthenticationReply {
 }
 
 impl Encode for AuthenticationReply {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(self.encoded_len());
-        self.to_writer(&mut buf).expect("failed to write data");
-
-        buf
-    }
-
-    /// Encode the body into the writer.
-    ///
-    /// ## Packet Format
-    ///
-    /// ```plaintext
-    ///  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8  1 2 3 4 5 6 7 8
-    /// +----------------+----------------+----------------+----------------+
-    /// |     status     |      flags     |        server_msg_len           |
-    /// +----------------+----------------+----------------+----------------+
-    /// |           data_len              |        server_msg ...
-    /// +----------------+----------------+----------------+----------------+
-    /// |           data ...
-    /// +----------------+----------------+
-    /// ```
     fn to_writer<W: io::Write>(&self, mut w: W) -> io::Result<usize> {
-        let mut written = 0;
-        written += w.write(&[self.status.to_u8().unwrap(), self.flags.bits()])?;
+        let mut bytes_written = 0;
+        bytes_written += w.write(&[self.status.to_u8().unwrap(), self.flags.bits()])?;
 
         let server_msg_len = self.server_msg.as_ref().map_or(0, |v| v.len() as u16);
-        written += w.write(&server_msg_len.to_be_bytes())?;
+        bytes_written += w.write(&server_msg_len.to_be_bytes())?;
 
         let data_len = self.data.as_ref().map_or(0, |v| v.len() as u16);
-        written += w.write(&data_len.to_be_bytes())?;
+        bytes_written += w.write(&data_len.to_be_bytes())?;
 
         if let Some(msg) = &self.server_msg {
-            written += w.write(msg.as_ref())?
+            bytes_written += w.write(msg.as_ref())?
         }
 
         if let Some(data) = &self.data {
-            written += w.write(data)?
+            bytes_written += w.write(data)?
         }
         w.flush()?;
 
-        Ok(written)
+        Ok(bytes_written)
     }
 
     fn encoded_len(&self) -> usize {
@@ -222,11 +214,11 @@ pub struct AuthenticationContinue {
 
 impl Decode for AuthenticationContinue {
     fn from_reader<R: io::Read>(mut rdr: R) -> io::Result<Self> {
-        let mut preamble_buf = [0u8; 5];
-        rdr.read_exact(&mut preamble_buf)?;
-        let user_msg_len = NetworkEndian::read_u16(&preamble_buf[..]);
-        let data_len = NetworkEndian::read_u16(&preamble_buf[2..]);
-        let flags = ContinueFlags::from_bits(preamble_buf[4]).expect("Failed to decode flags");
+        let mut buf = [0u8; 5];
+        rdr.read_exact(&mut buf)?;
+        let user_msg_len = NetworkEndian::read_u16(&buf[..]);
+        let data_len = NetworkEndian::read_u16(&buf[2..]);
+        let flags = ContinueFlags::from_bits(buf[4]).expect("failed to decode flags");
 
         let user_msg = load_string_field(&mut rdr, user_msg_len as _)?;
         let data = load_byte_field(&mut rdr, data_len as _)?;
@@ -241,5 +233,67 @@ impl Decode for AuthenticationContinue {
 bitflags! {
     pub struct ContinueFlags: u8 {
         const ABORT = 0x01;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod authentication_request {
+        use super::*;
+
+        #[test]
+        fn test_decode() {
+            todo!()
+        }
+
+        #[test]
+        fn test_encode_account_body() {
+            todo!()
+        }
+
+        #[test]
+        fn test_encoded_len() {
+            todo!()
+        }
+    }
+
+    mod authentication_reply {
+        use super::*;
+
+        #[test]
+        fn test_decode() {
+            todo!()
+        }
+
+        #[test]
+        fn test_encode_account_body() {
+            todo!()
+        }
+
+        #[test]
+        fn test_encoded_len() {
+            todo!()
+        }
+    }
+
+    mod authentication_continue {
+        use super::*;
+
+        #[test]
+        fn test_decode() {
+            todo!()
+        }
+
+        #[test]
+        fn test_encode_account_body() {
+            todo!()
+        }
+
+        #[test]
+        fn test_encoded_len() {
+            todo!()
+        }
     }
 }
