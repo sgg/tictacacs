@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io;
 
 use bitflags::bitflags;
@@ -153,6 +154,19 @@ impl Header {
     pub fn is_obfuscated(&self) -> bool {
         !self.flags.contains(Flags::UNENCRYPTED)
     }
+
+    /// Create a [`BodyDecoder`] that can decode the body associated with this header.
+    pub fn body_decoder(
+        &self,
+        secret_key: impl AsRef<str>,
+        rdr: impl io::Read,
+    ) -> BodyDecoder<impl io::Read> {
+        BodyDecoder {
+            offset: 0,
+            pad: self.pseudo_pad(secret_key.as_ref()),
+            inner: rdr,
+        }
+    }
 }
 
 /// The type of TACACS+ packet
@@ -166,7 +180,18 @@ pub enum Type {
     /// TAC_PLUS_AUTHOR
     Authorization = 0x02,
     /// TAC_PLUS_ACCT
-    Accounting = 0x03,
+    Account = 0x03,
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Type::Authentication => "authentication",
+            Type::Authorization => "authorization",
+            Type::Account => "account",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 bitflags! {
@@ -182,5 +207,25 @@ bitflags! {
         ///
         /// Used to allow a client and server to negotiate "Single Connection Mode".
         const SINGLE_CONNECT_FLAG = 0x04;
+    }
+}
+
+pub struct BodyDecoder<R: io::Read> {
+    offset: usize,
+    pad: Vec<u8>,
+    inner: R,
+}
+
+impl<R: io::Read> io::Read for BodyDecoder<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let start = self.offset;
+
+        let bytes_read = self.inner.read(buf)?;
+        buf.iter_mut()
+            .zip(&self.pad[start..])
+            .for_each(|(out, pad_byte)| *out ^= pad_byte);
+
+        self.offset += bytes_read;
+        Ok(bytes_read)
     }
 }
