@@ -41,7 +41,7 @@ use crate::packet::{Decode, Encode};
 /// |   arg_N ...
 /// +----------------+----------------+----------------+----------------+
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorizationRequest {
     pub authen_method: AuthenMethod,
     pub priv_lvl: u8,
@@ -50,41 +50,48 @@ pub struct AuthorizationRequest {
     pub user: String,
     pub port: String,
     pub rem_addr: Option<String>,
-    pub args: HashMap<String, Argument>,
+    pub args: Option<Vec<Argument>>,
+}
+
+impl Encode for AuthorizationRequest {
+    fn to_writer<W: io::Write>(&self, w: W) -> io::Result<usize> {
+        todo!()
+    }
+
+    fn encoded_len(&self) -> usize {
+        todo!()
+    }
 }
 
 impl Decode for AuthorizationRequest {
     fn from_reader<R: io::Read>(mut rdr: R) -> io::Result<Self> {
-        let mut preamble_buf = [0u8; 8];
-        rdr.read_exact(&mut preamble_buf)?;
+        let mut buf = [0u8; 8];
+        rdr.read_exact(&mut buf)?;
 
-        let authen_method =
-            AuthenMethod::from_u8(preamble_buf[0]).expect("Failed to decode authen_method");
-        let priv_lvl = preamble_buf[1];
+        // TODO: this implementation is WRONG, we need to read arg lens before we start reading data
+        let authen_method = AuthenMethod::from_u8(buf[0]).expect("failed to decode authen_method");
+        let priv_lvl = buf[1];
         let authen_type =
-            AuthenticationType::from_u8(preamble_buf[2]).expect("Failed to decode authen_type");
-        let authen_service = AuthenticationService::from_u8(preamble_buf[3])
-            .expect("Failed to decode authen_service");
+            AuthenticationType::from_u8(buf[2]).expect("failed to decode authen_type");
+        let authen_service =
+            AuthenticationService::from_u8(buf[3]).expect("failed to decode authen_service");
 
-        let user = load_string_field(&mut rdr, preamble_buf[4] as _)?;
-        let port = load_string_field(&mut rdr, preamble_buf[5] as _)?;
-        let rem_addr = match preamble_buf[6] {
+        let (user_len, port_len, rem_addr_len, arg_count) = match buf[4..] {
+            [ul, pl, rl, al] => (ul, pl, rl, al),
+            _ => unreachable!(),
+        };
+        let arg_lens = load_arg_lens(&mut rdr, arg_count as _)?;
+
+        let user = load_string_field(&mut rdr, user_len as _)?;
+        let port = load_string_field(&mut rdr, port_len as _)?;
+        let rem_addr = match rem_addr_len {
             0 => None,
-            rem_addr_len => Some(load_string_field(&mut rdr, rem_addr_len as _)?),
+            len => Some(load_string_field(&mut rdr, len as _)?),
         };
-
-        let arg_count = preamble_buf[7] as usize;
-        let arg_lengths = {
-            let mut length_buf = vec![0u8; arg_count];
-            rdr.read_exact(&mut length_buf)?;
-            length_buf
+        let args = match arg_lens.len() {
+            0 => None,
+            _ => Some(load_arg_fields(&mut rdr, &arg_lens)?),
         };
-
-        let mut args = HashMap::with_capacity(arg_count);
-        for arg_len in arg_lengths {
-            let arg: Argument = load_string_field(&mut rdr, arg_len as _)?.parse()?;
-            args.insert(arg.name.clone(), arg);
-        }
 
         Ok(Self {
             authen_method,
@@ -101,7 +108,7 @@ impl Decode for AuthorizationRequest {
 
 /// The authentication method used to acquire user credentials.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum AuthenMethod {
     NotSet = 0x00,
     None = 0x01,
@@ -117,7 +124,7 @@ pub enum AuthenMethod {
 }
 
 /// An argument provided in an Authentication or Authorization request.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Argument {
     pub name: String,
     pub value: String,
@@ -135,22 +142,26 @@ impl FromStr for Argument {
     type Err = io::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some((name, value)) = s.split_once('=') {
-            return Ok(Argument {
-                name: name.to_string(),
-                value: value.to_string(),
-                mandatory: true,
-            });
-        }
-        if let Some((name, value)) = s.split_once('*') {
-            return Ok(Argument {
-                name: name.to_string(),
-                value: value.to_string(),
-                mandatory: false,
-            });
-        }
+        match s.split_once(&['=', '*'][..]) {
+            Some((name, value)) => {
+                // if this matched then this index must be an ASCII char on a boundary
+                let mandatory = match s.as_bytes()[name.len()] as char {
+                    '=' => true,
+                    '*' => false,
+                    _ => unreachable!(),
+                };
 
-        panic!("argument is not encoded properly")
+                Ok(Self {
+                    name: name.to_string(),
+                    value: value.to_string(),
+                    mandatory,
+                })
+            }
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "arg is missing delimiter",
+            )),
+        }
     }
 }
 
@@ -198,37 +209,39 @@ pub struct AuthorizationReply {
 }
 
 impl Encode for AuthorizationReply {
-    fn to_bytes(&self) -> Vec<u8> {
-        todo!()
-    }
-
     fn to_writer<W: io::Write>(&self, mut w: W) -> io::Result<usize> {
-        let mut written = 0;
+        let mut bytes_written = 0;
 
-        let mut preamble_buf = [0u8; 6];
-        preamble_buf[0] = self.status.to_u8().unwrap();
-        preamble_buf[1] = self.args.len() as u8;
+        let mut buf = [0u8; 6];
+        buf[0] = self.status.to_u8().unwrap();
+        buf[1] = self.args.len() as u8;
 
         let server_msg_len = self.server_msg.as_ref().map_or(0, String::len) as _;
-        NetworkEndian::write_u16(&mut preamble_buf[2..4], server_msg_len);
+        NetworkEndian::write_u16(&mut buf[2..4], server_msg_len);
 
         let data_len = self.data.as_ref().map_or(0, String::len) as _;
-        NetworkEndian::write_u16(&mut preamble_buf[4..6], data_len);
+        NetworkEndian::write_u16(&mut buf[4..6], data_len);
 
-        written += w.write(&preamble_buf)?;
+        bytes_written += w.write(&buf)?;
         for arg in &self.args {
-            written += w.write(arg.to_string().as_bytes())?;
+            bytes_written += w.write(arg.to_string().as_bytes())?;
         }
 
         w.flush()?;
 
-        Ok(written)
+        Ok(bytes_written)
     }
 
     fn encoded_len(&self) -> usize {
         6 + self.data.as_ref().map_or(0, String::len)
             + self.server_msg.as_ref().map_or(0, String::len)
             + self.args.iter().map(Argument::encoded_len).sum::<usize>()
+    }
+}
+
+impl Decode for AuthorizationReply {
+    fn from_reader<R: io::Read>(rdr: R) -> io::Result<Self> {
+        todo!()
     }
 }
 
@@ -240,4 +253,72 @@ pub enum AuthorizationStatus {
     Fail = 0x10,
     Error = 0x11,
     Follow = 0x21,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod authorization_request {
+        use super::*;
+
+        fn test_request() -> AuthorizationRequest {
+            let args = ["service=shell", "cmd=show", "cmdarg=version"]
+                .iter()
+                .copied()
+                .map(Argument::from_str)
+                .collect::<Result<_, _>>()
+                .unwrap();
+
+            AuthorizationRequest {
+                authen_method: AuthenMethod::TacacsPlus,
+                priv_lvl: 0,
+                authen_type: AuthenticationType::Ascii,
+                authen_service: AuthenticationService::Login,
+                user: "myuser2".to_string(),
+                port: "python_tty0".to_string(),
+                rem_addr: Some("python_device".to_string()),
+                args: Some(args),
+            }
+        }
+        fn test_body() -> &'static [u8] {
+            &include_bytes!("../../tests/data/1621708984374_body_authorization.bin")[..]
+        }
+
+        #[test]
+        fn test_decode() {
+            let decoded = AuthorizationRequest::from_reader(test_body())
+                .expect("failed to decode authZ request");
+            assert_eq!(decoded, test_request())
+        }
+
+        #[test]
+        fn test_encode_account_body() {
+            let encoded = test_request().to_bytes();
+            assert_eq!(encoded, test_body())
+        }
+
+        #[test]
+        fn test_encoded_len() {
+            assert_eq!(test_request().encoded_len(), test_body().len())
+        }
+    }
+    mod authorization_reply {
+        use super::*;
+
+        #[test]
+        fn test_decode() {
+            todo!()
+        }
+
+        #[test]
+        fn test_encode_account_body() {
+            todo!()
+        }
+
+        #[test]
+        fn test_encoded_len() {
+            todo!()
+        }
+    }
 }
